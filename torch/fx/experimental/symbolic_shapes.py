@@ -753,6 +753,9 @@ class SymNode:
     def lshift(self, other) -> "SymNode":  # noqa: F811
         return self._lshift(other)  # type: ignore[attr-defined]
 
+    def rshift(self, other) -> "SymNode":  # noqa: F811
+        return self._rshift(other)  # type: ignore[attr-defined]
+
     def sym_not(self) -> "SymNode":  # noqa: F811
         return self._sym_not()  # type: ignore[attr-defined]
 
@@ -970,6 +973,13 @@ class LShift(sympy.Function):
             raise ValueError('negative shift count')
         return base * 2 ** shift
 
+class RShift(sympy.Function):
+    @classmethod
+    def eval(cls, base, shift):
+        if shift < 0:
+            raise ValueError('negative shift count')
+        return base // 2 ** shift
+
 # TODO: As an indicator, this != 0 implies == 1 (and vice versa).
 # Because we do not have the ability to guard on the stride permutation
 # at the moment, it is hard to make further inferences when this is true,
@@ -1022,6 +1032,7 @@ reflectable_magic_methods = {
     'truediv': lambda a, b: TrueDiv(a, b),
     'floordiv': lambda a, b: FloorDiv(a, b),
     'lshift': lambda a, b: LShift(a, b),
+    'rshift': lambda a, b: RShift(a, b),
 }
 
 
