@@ -27,6 +27,7 @@ class UninitializedParameter(Tensor):
     ): ...
 
 class Buffer(Tensor):
+    persistent: builtins.bool
     def __init__(
         self,
         data: Tensor = ...,
@@ -35,6 +36,7 @@ class Buffer(Tensor):
     ): ...
 
 class UninitializedBuffer(Tensor):
+    persistent: builtins.bool
     def __init__(
         self,
         data: Tensor = ...,

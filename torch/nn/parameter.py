@@ -218,7 +218,6 @@ class Buffer(torch.Tensor, metaclass=_BufferMeta):
     Args:
         data (Tensor): parameter tensor.
     """
-
     def __new__(cls, data=None, requires_grad=False, persistent=True):
         if data is None:
             data = torch.empty(0)
@@ -226,6 +225,7 @@ class Buffer(torch.Tensor, metaclass=_BufferMeta):
             # For ease of BC maintenance, keep this path for standard Tensor.
             # Eventually (tm), we should change the behavior for standard Tensor to match.
             ret = torch.Tensor._make_subclass(cls, data, require_grad=requires_grad)
+            ret.persistent = persistent
             return ret
 
         # Path for custom tensors: set a flag on the instance to indicate buffer-ness.
@@ -237,10 +237,8 @@ class Buffer(torch.Tensor, metaclass=_BufferMeta):
                                "Buffer, please correct the detach() semantics defined by "
                                "its __torch_dispatch__() implementation.")
         t._is_buffer = True
+        t.persistent = persistent
         return t
-
-    def __init__(self, data=None, requires_grad=False, persistent=True):
-        self.persistent = persistent
 
     def __deepcopy__(self, memo):
         if id(self) in memo:
@@ -287,10 +285,9 @@ class UninitializedBuffer(UninitializedTensorMixin, Buffer):
 
     cls_to_become = Buffer
 
-    def __init__(self, data=None, requires_grad=False, device=None, dtype=None, persistent=True):
-        self.persistent = persistent
-
     def __new__(cls, requires_grad=False, device=None, dtype=None, persistent=True) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         data = torch.empty(0, **factory_kwargs)
-        return torch.Tensor._make_subclass(cls, data, requires_grad)
+        ret = torch.Tensor._make_subclass(cls, data, requires_grad)
+        ret.persistent = persistent
+        return ret

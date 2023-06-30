@@ -361,7 +361,7 @@ def _rebuild_buffer(data, requires_grad, persistent):
 
 
 def _rebuild_buffer_with_state(data, requires_grad, persistent, state):
-    buffer = torch.nn.Buffer(data, requires_grad, persitent)
+    buffer = torch.nn.Buffer(data, requires_grad, persistent)
     buffer = _set_obj_state(buffer, state)
     return buffer
 
