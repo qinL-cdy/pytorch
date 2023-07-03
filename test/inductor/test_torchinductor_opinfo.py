@@ -172,12 +172,13 @@ inductor_expected_failures_single_sample["cpu"] = {
     "bucketize": {b8, f16, f32, f64, i32, i64},
     "cholesky": {f32, f64},
     "combinations": {b8, f16, f32, f64, i32, i64},
-    "corrcoef": {f32, f64, i32, i64},
-    "cov": {f32, f64, i32, i64},
     "equal": {b8, f16, f32, f64, i32, i64},
     "index_add": {f16},
     "index_reduce": {f16, f32, f64},
     "istft": {f32, f64},
+    # Unsupported: data dependent operator: aten.equal.default
+    "corrcoef": {f16, f32, f64, i32, i64},
+    "cov": {f16, f32, f64, i32, i64},
     # Unsupported: data dependent operator: aten._local_scalar_dense.default
     "item": {b8, f16, f32, f64, i32, i64},
     "linalg.eig": {f32, f64},
@@ -541,6 +542,9 @@ class TestInductorOpInfo(TestCase):
         with torch.no_grad():
             torch.cuda.empty_cache()
         op_name = op.name
+        if 'matrix_exp' not in op_name:
+            return
+        torch._C._set_mkldnn_enabled(False)
         if op.variant_test_name:
             op_name += f".{op.variant_test_name}"
 
