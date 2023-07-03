@@ -1,4 +1,5 @@
 # Owner(s): ["module: inductor"]
+import contextlib
 import itertools
 
 import torch
@@ -12,7 +13,8 @@ from torch.nn import functional as F
 from torch.testing._internal.common_utils import IS_LINUX
 from torch.testing._internal.inductor_utils import HAS_CPU
 
-# The dict value is match_nodes
+# The dict value is match_nodes(computation_op+unary_op)
+
 unary_list = {
     torch.nn.ReLU(): 2,
     torch.nn.Sigmoid(): 2,
@@ -26,39 +28,6 @@ unary_list = {
     torch.nn.ReLU6(): 3,
     torch.nn.SiLU(): 3,
     torch.nn.Hardsigmoid(): 5,
-    lambda x: F.relu(x): 2,
-    lambda x: F.sigmoid(x): 2,
-    lambda x: F.tanh(x): 2,
-    lambda x: F.hardswish(x): 6,
-    lambda x: F.leaky_relu(x, 0.1): 4,
-    lambda x: F.hardtanh(x, min_val=-0.5, max_val=4): 3,
-    lambda x: F.gelu(x, approximate="none"): 6,
-    lambda x: F.gelu(x, approximate="tanh"): 10,
-    lambda x: F.relu6(x): 3,
-    lambda x: F.silu(x): 3,
-    lambda x: F.hardsigmoid(x): 5,
-    lambda x: torch.relu(x): 2,
-    lambda x: torch.sigmoid(x): 2,
-    lambda x: torch.tanh(x): 2,
-    lambda x: x.relu(): 2,
-    lambda x: x.sigmoid(): 2,
-    lambda x: x.tanh(): 2,
-}
-
-# The dict value is match_nodes
-unary_list_bf16 = {
-    torch.nn.ReLU(): 2,
-    torch.nn.Sigmoid(): 2,
-    torch.nn.Tanh(): 2,
-    lambda x: F.relu(x): 2,
-    lambda x: F.sigmoid(x): 2,
-    lambda x: F.tanh(x): 2,
-    lambda x: torch.relu(x): 2,
-    lambda x: torch.sigmoid(x): 2,
-    lambda x: torch.tanh(x): 2,
-    lambda x: x.relu(): 2,
-    lambda x: x.sigmoid(): 2,
-    lambda x: x.tanh(): 2,
 }
 
 
@@ -85,10 +54,21 @@ class TestPaternMatcher(TestCase):
         return tuple(clone(x) for x in inputs)
 
     def _test_common(
-        self, mod, inputs, matcher_count, matcher_nodes, atol=1e-5, rtol=1.3e-6
+        self,
+        mod,
+        inputs,
+        matcher_count,
+        matcher_nodes,
+        atol=1e-5,
+        rtol=1.3e-6,
+        check_autocast=False,
     ):
         counters.clear()
-        with torch.no_grad():
+        maybe_autocast = contextlib.nullcontext()
+        if check_autocast and torch.ops.mkldnn._is_mkldnn_bf16_supported():
+            maybe_autocast = torch.cpu.amp.autocast()
+            atol, rtol = 1e-2, 1e-2
+        with torch.no_grad(), maybe_autocast:
             clone_inputs = self._clone_inputs(inputs)
             expected = mod(*inputs)
             actual = torch.compile(mod)(*clone_inputs)
@@ -131,27 +111,32 @@ class TestPaternMatcher(TestCase):
                 x = self.conv(x)
                 return self.unary_fn(x)
 
-        test_memory_format = [torch.contiguous_format, torch.channels_last]
         options = itertools.product(
             unary_list.keys(),
-            test_memory_format,
+            [torch.contiguous_format, torch.channels_last],
+            [True, False],
         )
 
         for (
             unary_fn,
             memory_format,
+            check_autocast,
         ) in options:
             x_shape = (1, 3, 56, 56)
-            mod = M(unary_fn).eval()
+            mod = M(unary_fn).to(memory_format=memory_format).eval()
 
-            # TODO: add bf16 test for cpu path?
-            # TODO: this test fails when requires_grad=False
             v = (
-                torch.randn(x_shape, dtype=torch.float32, requires_grad=True)
+                torch.randn(x_shape, dtype=torch.float32)
                 .add(1)
                 .to(memory_format=memory_format)
             )
-            self._test_common(mod, (v,), 2, unary_list[unary_fn] + 1)
+            match_nodes = unary_list[unary_fn] + 1
+            if check_autocast and not any(
+                isinstance(unary_fn, fn)
+                for fn in [torch.nn.ReLU, torch.nn.Sigmoid, torch.nn.Tanh]
+            ):
+                match_nodes += 2
+            self._test_common(mod, (v,), 2, match_nodes, check_autocast=check_autocast)
 
     def test_linear_unary(self):
         class M(torch.nn.Module):
@@ -176,7 +161,7 @@ class TestPaternMatcher(TestCase):
                 x = self.linear(x)
                 return self.unary_fn(x)
 
-        options = itertools.product(unary_list_bf16, [True, False])
+        options = itertools.product(unary_list, [True, False])
         dtype = torch.bfloat16
         if torch.ops.mkldnn._is_mkldnn_bf16_supported():
             for unary_fn, bias in options:
@@ -185,9 +170,14 @@ class TestPaternMatcher(TestCase):
                 mod = mod.to(dtype)
                 v = torch.randn(2, 10).to(dtype)
                 matcher_count = 2
-                matcher_nodes = unary_list_bf16[unary_fn] + 1
+                matcher_nodes = unary_list[unary_fn] + 1
+                if not any(
+                    isinstance(unary_fn, fn)
+                    for fn in [torch.nn.ReLU, torch.nn.Sigmoid, torch.nn.Tanh]
+                ):
+                    matcher_nodes += 2
                 self._test_common(
-                    mod, (v,), matcher_count, matcher_nodes, atol=1e-5, rtol=1.6e-2
+                    mod, (v,), matcher_count, matcher_nodes, check_autocast=True
                 )
 
     def test_conv_transpose2d_unary(self):
@@ -207,20 +197,26 @@ class TestPaternMatcher(TestCase):
                 x = self.conv_transpose2d(x)
                 return self.unary_fn(x)
 
-        test_memory_format = [torch.contiguous_format, torch.channels_last]
         options = itertools.product(
             unary_list,
-            test_memory_format,
+            [torch.contiguous_format, torch.channels_last],
+            [True, False],
         )
 
-        for unary_fn, memory_format in options:
+        for unary_fn, memory_format, check_autocast in options:
             x_shape = (1, 3, 28, 28)
             mod = M(unary_fn).eval()
 
             v = torch.randn(x_shape, dtype=torch.float32).to(
                 memory_format=memory_format
             )
-            self._test_common(mod, (v,), 2, unary_list[unary_fn] + 1)
+            match_nodes = unary_list[unary_fn] + 1
+            if check_autocast and not any(
+                isinstance(unary_fn, fn)
+                for fn in [torch.nn.ReLU, torch.nn.Sigmoid, torch.nn.Tanh]
+            ):
+                match_nodes += 2
+            self._test_common(mod, (v,), 2, match_nodes, check_autocast=check_autocast)
 
     def test_conv2d_binary(self):
         class M(torch.nn.Module):
